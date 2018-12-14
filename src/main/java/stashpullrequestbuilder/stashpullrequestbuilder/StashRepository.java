@@ -7,6 +7,7 @@ import stashpullrequestbuilder.stashpullrequestbuilder.stash.StashPullRequestCom
 import stashpullrequestbuilder.stashpullrequestbuilder.stash.StashPullRequestMergableResponse;
 import stashpullrequestbuilder.stashpullrequestbuilder.stash.StashPullRequestResponseValue;
 import stashpullrequestbuilder.stashpullrequestbuilder.stash.StashPullRequestResponseValueRepository;
+import stashpullrequestbuilder.stashpullrequestbuilder.stash.StashPullRequestParticipantsResponse;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -202,6 +203,12 @@ public class StashRepository {
     public boolean mergePullRequest(String pullRequestId, String version)
     {
         return this.client.mergePullRequest(pullRequestId, version);
+    }
+
+    public boolean sendPullRequestApproval(String pullRequestId, Boolean approved) {
+        StashPullRequestParticipantsResponse response;
+        response = this.client.sendPullRequestApproval(pullRequestId, approved);
+        return response.getApproved();
     }
 
     private Boolean isPullRequestMergable(StashPullRequestResponseValue pullRequest) {

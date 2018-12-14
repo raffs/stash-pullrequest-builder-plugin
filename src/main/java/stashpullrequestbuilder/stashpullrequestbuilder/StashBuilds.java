@@ -75,8 +75,24 @@ public class StashBuilds {
                 cause.getDestinationCommitHash(), result, buildUrl,
                 run.getNumber(), additionalComment, duration);
 
-        //Merge PR
         StashBuildTrigger trig = StashBuildTrigger.getTrigger(run.getParent());
+
+        // Approve or Reject PR
+        if (trig.isAddPrReviewerActionEnabled()) {
+            String logmsg = "";
+            Boolean succeed = run.getResult() == Result.SUCCESS || run.getResult() == Result.UNSTABLE;
+            Boolean approved = repository.sendPullRequestApproval(cause.getPullRequestId(), succeed);
+
+            if (approved)
+                logmsg = "PR #" + cause.getPullRequestId() + " marked as approved";
+            else
+                logmsg = "PR #" + cause.getPullRequestId() + " marked as failures";
+
+            logger.log(Level.INFO, logmsg);
+            listener.getLogger().println(logmsg);
+        }
+
+        //Merge PR
         if(trig.getMergeOnSuccess() && run.getResult() == Result.SUCCESS) {
             boolean mergeStat = repository.mergePullRequest(cause.getPullRequestId(), cause.getPullRequestVersion());
             if(mergeStat == true)

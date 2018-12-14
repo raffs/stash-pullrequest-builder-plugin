@@ -60,6 +60,7 @@ Select *Stash Pull Request Builder* then configure:
 - Only build when asked (with test phrase):
 - CI Build Phrases: default: "test this please"
 - Target branches: a comma separated list of branches (e.g. brancha,branchb)
++ - Approve or Reject the Pull Request according to the build execute status
 
 ## Building the merge of Source Branch into Target Branch
 

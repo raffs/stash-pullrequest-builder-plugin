@@ -15,6 +15,7 @@ import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
@@ -65,6 +66,7 @@ public class StashApiClient {
 
     private String project;
     private String repositoryName;
+    private String username;
     private Credentials credentials;
     private boolean ignoreSsl;
 
@@ -72,6 +74,7 @@ public class StashApiClient {
     public StashApiClient(String stashHost, String username, String password, String project, String repositoryName, boolean ignoreSsl) {
         this.credentials = new UsernamePasswordCredentials(username, password);
         this.project = project;
+        this.username = username;
         this.repositoryName = repositoryName;
         this.apiBaseUrl = stashHost.replaceAll("/$", "") + "/rest/api/1.0/projects/";
         this.ignoreSsl = ignoreSsl;
@@ -169,6 +172,34 @@ public class StashApiClient {
             logger.log(Level.SEVERE, "Failed to merge Stash PR " + path + " " + e);
         }
         return false;
+    }
+
+    // Send a PR approval. The approved variable controls whether the PR was sucessfully approved or not 
+    public StashPullRequestParticipantsResponse sendPullRequestApproval(String pullRequestId, Boolean approved) {
+        String path = pullRequestPath(pullRequestId) + "/participants/" + this.username;
+
+        try {
+            ObjectNode payload = this.mapper.getNodeFactory().objectNode();
+
+            payload.put("approved", approved);
+            payload.put("role", "REVIEWER");
+            payload.put("status", (approved) ? "APPROVED" : "NEEDS_WORK");
+
+            String response = putRequest(path, payload);
+            if (response != null)
+                return parseParticipantsResponse(response);
+
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            logger.log(Level.SEVERE, "Failed to aprove Stash PR " + path + " " + e);
+        }
+
+        return null;
+    }
+
+    public StashPullRequestParticipantsResponse sendPullRequestApproval(String pullRequestId) {
+        return sendPullRequestApproval(pullRequestId, true);
     }
 
     private HttpContext gethttpContext(Credentials credentials) {
@@ -430,6 +461,96 @@ public class StashApiClient {
         return response;
     }
 
+    private String putRequest(String path, ObjectNode node) throws UnsupportedEncodingException {
+        logger.info("Send PR Approval to: " + path);
+        HttpClient client = getHttpClient();
+        HttpContext context = gethttpContext(credentials);
+
+        HttpPut httpput = new HttpPut(path);
+        //http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html; section 14.10.
+        //tells the server that we want it to close the connection when it has sent the response.
+        //address large amount of close_wait sockets client and fin sockets server side
+        httpput.setHeader("Connection", "close");
+        httpput.setHeader("X-Atlassian-Token", "no-check"); //xsrf
+
+        // if (comment != null) {
+            //ObjectNode node = mapper.getNodeFactory().objectNode();
+            //node.put("text", comment);
+            StringEntity requestEntity = null;
+            try {
+                requestEntity = new StringEntity(
+                        mapper.writeValueAsString(node),
+                        ContentType.APPLICATION_JSON);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        httpput.setEntity(requestEntity);
+        //}
+
+        String response = "";
+        FutureTask<String> httpTask = null;
+        Thread thread;
+
+        try {
+            //Run the http request in a future task so we have the opportunity
+            //to cancel it if it gets hung up; which is possible if stuck at
+            //socket native layer.  see issue JENKINS-30558
+            httpTask = new FutureTask<String>(new Callable<String>() {
+
+                private HttpClient client;
+                private HttpContext context;
+                private HttpPut httpput;
+
+                @Override
+                public String call() throws Exception {
+
+                    HttpResponse httpResponse = client.execute(httpput, context);
+                    int responseCode = httpResponse.getStatusLine().getStatusCode();
+                    String response = httpResponse.getStatusLine().getReasonPhrase();
+                    if (!validResponseCode(responseCode)) {
+                        logger.log(Level.SEVERE, "Failing to get response from Stash PR PUT" + httpput.getURI().getPath());
+                        throw new RuntimeException("Didn't get a 200 response from Stash PR PUT! Response; '" +
+                                responseCode + "' with message; " + response);
+                    }
+                    InputStream responseBodyAsStream = httpResponse.getEntity().getContent();
+                    StringWriter stringWriter = new StringWriter();
+                    IOUtils.copy(responseBodyAsStream, stringWriter, "UTF-8");
+                    response = stringWriter.toString();
+                    logger.log(Level.FINEST, "API Request Response: " + response);
+
+                    return response;
+
+                }
+
+                public Callable<String> init(HttpClient client, HttpPut httpput, HttpContext context) {
+                    this.client = client;
+                    this.context = context;
+                    this.httpput = httpput;
+                    return this;
+                }
+
+            }.init(client, httpput, context));
+            thread = new Thread(httpTask);
+            thread.start();
+            response = httpTask.get((long) StashApiClient.HTTP_REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        } catch (TimeoutException e) {
+            e.printStackTrace();
+            httpput.abort();
+            throw new RuntimeException(e);
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        } finally {
+            httpput.releaseConnection();
+        }
+
+        logger.log(Level.FINEST, "PR-POST-RESPONSE:" + response);
+
+        return response;
+    }
+
+
     private boolean validResponseCode(int responseCode) {
         return responseCode == HttpStatus.SC_OK ||
                 responseCode == HttpStatus.SC_ACCEPTED ||
@@ -473,6 +594,12 @@ public class StashApiClient {
         parsedResponse = mapper.readValue(
                 response,
                 StashPullRequestMergableResponse.class);
+        return parsedResponse;
+    }
+
+    private StashPullRequestParticipantsResponse parseParticipantsResponse(String response) throws IOException {
+        StashPullRequestParticipantsResponse parsedResponse;
+        parsedResponse = mapper.readValue(response, StashPullRequestParticipantsResponse.class);
         return parsedResponse;
     }
 
